@@ -52,6 +52,11 @@ def run_exe(exe: ExecutableSerialisation, extra_env: T.Optional[dict] = None) ->
                 exe.exe_runner.get_command(),
                 ['Z:' + p for p in exe.extra_paths] + child_env.get('WINEPATH', '').split(';')
             )
+    if exe.extra_mono_paths:
+        mono_path = exe.extra_mono_paths
+        if 'MONO_PATH' in child_env:
+            mono_path += [child_env['MONO_PATH']]
+        child_env['MONO_PATH'] = os.pathsep.join(mono_path)
 
     pipe = subprocess.PIPE
     if exe.verbose:

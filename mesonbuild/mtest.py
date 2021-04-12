@@ -1298,6 +1298,11 @@ class SingleTestRunner:
                         ['Z:' + p for p in self.test.extra_paths] + env.get('WINEPATH', '').split(';')
                     )
                     break
+        if self.cmd and self.test.extra_mono_paths:
+            mono_path = self.test.extra_mono_paths
+            if 'MONO_PATH' in env:
+                mono_path += [env['MONO_PATH']]
+            env['MONO_PATH'] = os.pathsep.join(mono_path)
 
         # If MALLOC_PERTURB_ is not set, or if it is set to an empty value,
         # (i.e., the test or the environment don't explicitly set it), set

@@ -137,7 +137,7 @@ class SubdirInstallData(InstallDataBase):
 
 class ExecutableSerialisation:
     def __init__(self, cmd_args, env: T.Optional[build.EnvironmentVariables] = None, exe_wrapper=None,
-                 workdir=None, extra_paths=None, capture=None) -> None:
+                 workdir=None, extra_paths=None, extra_mono_paths=None, capture=None) -> None:
         self.cmd_args = cmd_args
         self.env = env
         if exe_wrapper is not None:
@@ -145,6 +145,7 @@ class ExecutableSerialisation:
         self.exe_runner = exe_wrapper
         self.workdir = workdir
         self.extra_paths = extra_paths
+        self.extra_mono_paths = extra_mono_paths
         self.capture = capture
         self.pickled = False
         self.skip_if_destdir = False
@@ -157,7 +158,7 @@ class TestSerialisation:
                  needs_exe_wrapper: bool, is_parallel: bool, cmd_args: T.List[str],
                  env: build.EnvironmentVariables, should_fail: bool,
                  timeout: T.Optional[int], workdir: T.Optional[str],
-                 extra_paths: T.List[str], protocol: TestProtocol, priority: int,
+                 extra_paths: T.List[str], extra_mono_paths: T.List[str], protocol: TestProtocol, priority: int,
                  cmd_is_built: bool, depends: T.List[str], version: str):
         self.name = name
         self.project_name = project
@@ -174,6 +175,7 @@ class TestSerialisation:
         self.timeout = timeout
         self.workdir = workdir
         self.extra_paths = extra_paths
+        self.extra_mono_paths = extra_mono_paths
         self.protocol = protocol
         self.priority = priority
         self.needs_exe_wrapper = needs_exe_wrapper
@@ -443,6 +445,8 @@ class Backend:
         else:
             extra_paths = []
 
+        extra_mono_paths = []
+
         is_cross_built = not self.environment.machines.matches_build_machine(exe_for_machine)
         if is_cross_built and self.environment.need_exe_wrapper():
             exe_wrapper = self.environment.get_exe_wrapper()
@@ -455,12 +459,13 @@ class Backend:
                 exe_cmd = ['java', '-jar'] + exe_cmd
             elif exe_cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin() or mesonlib.is_wsl()):
                 exe_cmd = ['mono'] + exe_cmd
+                extra_mono_paths = self.determine_extra_mono_paths(exe)
             exe_wrapper = None
 
         workdir = workdir or self.environment.get_build_dir()
         return ExecutableSerialisation(exe_cmd + cmd_args, env,
                                        exe_wrapper, workdir,
-                                       extra_paths, capture)
+                                       extra_paths, extra_mono_paths, capture)
 
     def as_meson_exe_cmdline(self, tname, exe, cmd_args, workdir=None,
                              extra_bdeps=None, capture=None, force_serialize=False,
@@ -475,6 +480,9 @@ class Backend:
         reasons = []
         if es.extra_paths:
             reasons.append('to set PATH')
+
+        if es.extra_mono_paths:
+            reasons.append('to set MONO_PATH')
 
         if es.exe_runner:
             reasons.append('to use exe_wrapper')
@@ -897,6 +905,18 @@ class Backend:
             result.update(self.get_mingw_extra_paths(target))
         return list(result)
 
+    def determine_extra_mono_paths(self, target: T.Union[build.BuildTarget, str]):
+        result = set()
+        prospectives = set()
+        if isinstance(target, build.BuildTarget):
+            prospectives.update(target.get_transitive_link_deps())
+        for ld in prospectives:
+            if ld == '' or ld == '.':
+                continue
+            dirseg = os.path.join(self.environment.get_build_dir(), self.get_target_dir(ld))
+            result.add(dirseg)
+        return list(result)
+
     def write_benchmark_file(self, datafile):
         self.write_test_serialisation(self.build.get_benchmarks(), datafile)
 
@@ -940,6 +960,10 @@ class Backend:
             else:
                 extra_paths = []
 
+            extra_mono_paths = []
+            if cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin() or mesonlib.is_wsl()):
+                extra_mono_paths = self.determine_extra_mono_paths(exe)
+
             cmd_args = []
             depends = set(t.depends)
             if isinstance(exe, build.Target):
@@ -949,6 +973,8 @@ class Backend:
                     depends.add(a)
                 if isinstance(a, build.BuildTarget):
                     extra_paths += self.determine_windows_extra_paths(a, [])
+                    if self.get_target_filename(a).endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin() or mesonlib.is_wsl()):
+                        extra_mono_paths += self.determine_extra_mono_paths(a)
                 if isinstance(a, mesonlib.File):
                     a = os.path.join(self.environment.get_build_dir(), a.rel_to_builddir(self.build_to_src))
                     cmd_args.append(a)
@@ -967,7 +993,7 @@ class Backend:
                                    exe_wrapper, self.environment.need_exe_wrapper(),
                                    t.is_parallel, cmd_args, t.env,
                                    t.should_fail, t.timeout, t.workdir,
-                                   extra_paths, t.protocol, t.priority,
+                                   extra_paths, extra_mono_paths, t.protocol, t.priority,
                                    isinstance(exe, build.Executable),
                                    [x.get_id() for x in depends],
                                    self.environment.coredata.version)
@@ -1503,6 +1529,7 @@ class Backend:
     def get_devenv(self) -> build.EnvironmentVariables:
         env = build.EnvironmentVariables()
         extra_paths = set()
+        extra_mono_paths = set()
         library_paths = set()
         for t in self.build.get_targets().values():
             cross_built = not self.environment.machines.matches_build_machine(t.for_machine)
@@ -1529,7 +1556,9 @@ class Backend:
             extra_paths.update(library_paths)
         elif mesonlib.is_osx():
             env.prepend('DYLD_LIBRARY_PATH', list(library_paths))
+            env.prepend('MONO_PATH', list(library_paths))
         else:
             env.prepend('LD_LIBRARY_PATH', list(library_paths))
+            env.prepend('MONO_PATH', list(library_paths))
         env.prepend('PATH', list(extra_paths))
         return env
